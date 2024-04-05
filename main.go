@@ -1,8 +1,7 @@
 package main
 
-//TODO zrobić opcję wpisania reconect czy coś jeżeli bot się rozłączy
-//czy inny choi
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,141 +12,134 @@ import (
 	"path/filepath"
 )
 
-// vars
-var public_link string = "http://192.168.0.189"
-var test_link string = "http://localhost"
-
-var audio_test int = 3001
-
-// var audio_port int = 81
-
-var main_link string = test_link
-var station_name string
+// http://localhost:3001
+// 192.168.0.189
+var testLink string = "http://192.168.0.189:3001"
+var mainLink string = testLink
+var stationName string
 
 type ResponseBody struct {
 	Ok int `json:"ok"`
 }
 
 func main() {
-	fmt.Println("enter the name of the station:")
-	fmt.Scanln(&station_name)
-	// Wykonaj żądanie GET na /ping
-	// response, err := http.Get(main_link + ":3001/connect/" + station_name)
-	response, err := http.Get(main_link + ":3001/connect/" + station_name)
+	fmt.Println("Enter the name of the station:")
+	fmt.Scanln(&stationName)
+
+	executablePath, err := os.Executable()
 	if err != nil {
-		fmt.Println("Wystąpił błąd podczas wykonywania żądania:", err)
-		return
+		log.Fatalf("Error getting executable path: %v", err)
+	}
+
+	baseDirectory := filepath.Dir(executablePath)
+	audioDirectory := filepath.Join(baseDirectory, "audio")
+	fileNames, err := listFilesInDirectory(audioDirectory)
+	if err != nil {
+		log.Fatalf("Error listing files in directory: %v", err)
+	}
+
+	responseJSON, err := json.Marshal(fileNames)
+	if err != nil {
+		log.Fatalf("Error serializing file list to JSON: %v", err)
+	}
+
+	requestBody := bytes.NewBuffer(responseJSON)
+
+	ipAddress, err := getIPAddress()
+	if err != nil {
+		log.Fatalf("Error getting IP address: %v", err)
+	}
+
+	response, err := http.Post(mainLink+"/connect/"+stationName+"?ip="+ipAddress, "application/json", requestBody)
+	if err != nil {
+		log.Fatalf("Error sending request: %v", err)
 	}
 	defer response.Body.Close()
 
-	// Odczytaj odpowiedź
 	body, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		fmt.Println("Wystąpił błąd podczas odczytywania odpowiedzi:", err)
-		return
+		log.Fatalf("Error reading response: %v", err)
 	}
 
-	// Parsuj odpowiedź JSON
 	var responseBody ResponseBody
 	err = json.Unmarshal(body, &responseBody)
 	if err != nil {
-		fmt.Println("Wystąpił błąd podczas parsowania JSON:", err)
-		return
+		log.Fatalf("Error parsing JSON: %v", err)
 	}
 
-	// Sprawdź wartość pola "ok"
 	if responseBody.Ok == 200 {
-		fmt.Println("Odpowiedź z serwera: OK (status 200)")
-		start_server()
+		fmt.Println("Server response: OK (status 200)")
+		go startHTTPServer() // Uruchomienie serwera HTTP w osobnej gorutynie
 	} else {
-		fmt.Println("Odpowiedź z serwera: Niepoprawny status")
+		fmt.Println("Server response: Invalid status")
+	}
+
+	// Poczekaj, aby uniknąć zakończenia działania programu
+	select {}
+}
+
+func getIPAddress() (string, error) {
+	response, err := http.Get("https://api.ipify.org?format=json")
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+
+	var data map[string]string
+	if err := json.NewDecoder(response.Body).Decode(&data); err != nil {
+		return "", err
+	}
+
+	ipAddress, ok := data["ip"]
+	if !ok {
+		return "", fmt.Errorf("IP address not found in response")
+	}
+
+	return ipAddress, nil
+}
+
+func startHTTPServer() {
+	fmt.Println("Starting HTTP server...")
+	http.HandleFunc("/", handleAudioRequest)
+	if err := http.ListenAndServe(":3002", nil); err != nil {
+		log.Fatalf("Error starting HTTP server: %v", err)
 	}
 }
 
-func start_server() {
-	// Pobierz ścieżkę do katalogu, w którym znajduje się wykonywalny plik
-	executablePath, err := os.Executable()
+func handleAudioRequest(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Received request from server")
+	fileName := filepath.Base(r.URL.Path)
+
+	audioDirectory := "./audio"
+	filePath := filepath.Join(audioDirectory, fileName)
+	file, err := os.Open(filePath)
 	if err != nil {
-		log.Fatalf("Wystąpił błąd podczas pobierania ścieżki wykonywalnego pliku: %v", err)
+		log.Printf("Error opening file: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
-	// Pobierz ścieżkę katalogu nadrzędnego (folder, w którym znajduje się plik wykonywalny)
-	baseDirectory := filepath.Dir(executablePath)
-	audioDirectory := filepath.Join(baseDirectory, "audio")
+	defer file.Close()
 
-	// Definiujemy handler, który zostanie wywołany przy każdym żądaniu na ścieżce "/endpoint"
-	http.HandleFunc("/endpoint", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println("Otrzymano żądanie od serwera")
+	w.Header().Set("Content-Type", "audio/mpeg")
 
-		// Pobierz listę plików z katalogu /audio
-		fileNames, err := listFilesInDirectory(audioDirectory)
-		if err != nil {
-			log.Fatalf("Wystąpił błąd podczas pobierania listy plików: %v", err)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
-		}
-
-		// Serializuj listę plików do formatu JSON
-		responseJSON, err := json.Marshal(fileNames)
-		if err != nil {
-			log.Fatalf("Wystąpił błąd podczas serializacji listy plików do JSON: %v", err)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
-		}
-
-		// Wyślij listę plików jako odpowiedź
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write(responseJSON)
-	})
-
-	http.HandleFunc("/get_song/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println("Otrzymano żądanie od serwera")
-
-		// Pobieramy nazwę pliku z parametru ścieżki
-		fileName := filepath.Base(r.URL.Path)
-
-		// Ścieżka do katalogu /audio
-		audioDirectory := "./audio" // Tutaj podaj odpowiednią ścieżkę do katalogu audio
-
-		// Otwieramy plik
-		filePath := filepath.Join(audioDirectory, fileName)
-		file, err := os.Open(filePath)
-		if err != nil {
-			log.Printf("Błąd podczas otwierania pliku: %v", err)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
-		}
-		defer file.Close()
-
-		// Kopiujemy zawartość pliku do odpowiedzi HTTP
-		_, err = io.Copy(w, file)
-		if err != nil {
-			log.Printf("Błąd podczas kopiowania zawartości pliku do odpowiedzi HTTP: %v", err)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
-		}
-	})
-
-	// Uruchomienie serwera na porcie 3000
-	fmt.Println("Serwer nasłuchuje na porcie 3002...")
-	if err := http.ListenAndServe(":3002", nil); err != nil {
-		log.Fatalf("Wystąpił błąd podczas uruchamiania serwera: %v", err)
+	_, err = io.Copy(w, file)
+	if err != nil {
+		log.Printf("Error copying file content to HTTP response: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
 }
 
 func listFilesInDirectory(directoryPath string) ([]string, error) {
 	var fileNames []string
 
-	// Odczytaj zawartość katalogu
 	files, err := ioutil.ReadDir(directoryPath)
 	if err != nil {
 		return nil, err
 	}
 
-	// Iteruj przez pliki i dodaj nazwy do slice'a
 	for _, file := range files {
 		if file.IsDir() {
-			// Pomijaj katalogi, jeśli chcesz tylko pliki
 			continue
 		}
 		fileNames = append(fileNames, file.Name())
