@@ -13,9 +13,6 @@ import (
 )
 
 // http://localhost:3001
-// 192.168.0.189
-// https://login.tailscale.com/admin/invite/D9h9RJ98X48
-// https://tsunami-server.tail3898e.ts.net/
 // https://tsunami-server.tail3898e.ts.net
 var testLink string = "https://tsunami-server.tail3898e.ts.net"
 var mainLink string = testLink
